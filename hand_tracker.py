@@ -2,7 +2,6 @@
 Hand tracking module using MediaPipe for gesture recognition.
 """
 
-import cv2
 import mediapipe as mp
 import numpy as np
 from typing import List, Tuple, Optional, Dict, Any

@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 """
-Gesture-to-Text: Real-time hand gesture recognition for text input
+Manuscribe: Real-time hand gesture recognition for text input
 """
 
 import cv2
 import numpy as np
-import threading
 import time
-from collections import deque
-from typing import List, Tuple, Optional
 
 from hand_tracker import HandTracker
 from drawing_manager import DrawingManager
@@ -17,7 +14,7 @@ from character_recognizer import CharacterRecognizer
 
 class GestureToTextApp:
     def __init__(self):
-        """Initialize the Gesture-to-Text application."""
+        """Initialize the Manuscribe application."""
         self.cap = cv2.VideoCapture(0)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
@@ -137,7 +134,7 @@ class GestureToTextApp:
     
     def run(self):
         """Main application loop."""
-        print("Gesture-to-Text Application Started")
+        print("Manuscribe Started")
         print("Point with your index finger to draw letters, numbers, or symbols")
         print("Press 'q' to quit, 'c' to clear recognized text")
         
