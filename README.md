@@ -1,4 +1,4 @@
-# Gesture-to-Text: Real-time Hand Gesture Recognition
+# Manuscribe: Real-time Hand Gesture-to-Text Conversion
 
 A computer vision application that converts hand-drawn letters, numbers, and symbols into text in real-time using your camera. Draw characters in the air with your index finger and watch them appear as text!
 
