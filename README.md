@@ -23,22 +23,34 @@ A computer vision application that converts hand-drawn letters, numbers, and sym
 
 1. **Clone or navigate to the project directory**:
    ```bash
-   cd /Users/george/Documents/Coding/gesture-to-text
+   cd manuscribe
    ```
 
-2. **Install dependencies**:
+2. **Create and activate virtual environment**:
+   ```bash
+   python3.12 -m venv venv
+   source venv/bin/activate
+   ```
+
+3. **Install dependencies**:
    ```bash
    pip install -r requirements.txt
    ```
 
 ## Usage
 
-1. **Run the application**:
+1. **Run the application** (easiest method):
    ```bash
+   ./run.sh
+   ```
+
+2. **Alternative method** (manual activation):
+   ```bash
+   source venv/bin/activate
    python main.py
    ```
 
-2. **How to use**:
+3. **How to use**:
    - Position your hand in front of the camera
    - **Extend your index finger** to start drawing
    - **Keep your index finger extended** while drawing characters
@@ -46,7 +58,7 @@ A computer vision application that converts hand-drawn letters, numbers, and sym
    - **Wait 2 seconds** after completing a character for automatic recognition
    - The recognized text will appear in the terminal and on screen
 
-3. **Controls**:
+4. **Controls**:
    - `q`: Quit the application
    - `c`: Clear the recognized text
 
@@ -69,12 +81,13 @@ The application can recognize:
 ## Project Structure
 
 ```
-gesture-to-text/
+manuscribe/
 ├── main.py                    # Main application entry point
 ├── hand_tracker.py           # Hand tracking and gesture detection
 ├── drawing_manager.py        # Stroke tracking and drawing management
 ├── character_recognizer.py   # Character recognition from drawn strokes
 ├── requirements.txt          # Python dependencies
+├── run.sh                    # Easy run script (executable)
 └── README.md                # This file
 ```
 
@@ -109,6 +122,7 @@ gesture-to-text/
 - Ensure your camera is not being used by another application
 - Check camera permissions in your system settings
 - Try changing the camera index in `main.py` if you have multiple cameras
+- Test camera access with: `python -c "import cv2; cap = cv2.VideoCapture(0); print('Camera OK' if cap.isOpened() else 'Camera Error'); cap.release()"`
 
 ### Hand Tracking Issues
 - Ensure good lighting conditions
