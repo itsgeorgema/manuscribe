@@ -15,24 +15,31 @@ import easyocr
 class CharacterRecognizer:
     """Recognizes characters from drawn stroke images."""
     
-    def __init__(self, use_ocr: bool = True, use_ml: bool = False):
+    def __init__(self, use_ocr: bool = True, use_ml: bool = False, debug: bool = False):
         """
         Initialize the character recognizer.
         
         Args:
             use_ocr: Whether to use OCR for character recognition
             use_ml: Whether to use machine learning model (requires training)
+            debug: Whether to save debug images
         """
         self.use_ocr = use_ocr
         self.use_ml = use_ml
+        self.debug = False  # force off to avoid writing files
+        self.debug_counter = 0
         
-        # Initialize OCR reader
+        # Initialize OCR reader with better settings
         if self.use_ocr:
             try:
-                self.ocr_reader = easyocr.Reader(['en'], gpu=False)
+                # Use more languages and better settings for hand-drawn text
+                import ssl
+                ssl._create_default_https_context = ssl._create_unverified_context
+                self.ocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False)
                 print("OCR reader initialized successfully")
             except Exception as e:
                 print(f"Failed to initialize OCR reader: {e}")
+                print("Falling back to template matching only")
                 self.use_ocr = False
         
         # Initialize ML components
@@ -63,26 +70,37 @@ class CharacterRecognizer:
         # Preprocess the image
         processed_image = self._preprocess_image(image)
         
+        # Check if image has reasonable content
+        if processed_image.mean() < 5:  # Too dark
+            print("Recognition: Image too dark, skipping")
+            return None
+        
         # Try different recognition methods
         recognized_char = None
         
-        # Method 1: OCR recognition
+        # Method 1: OCR recognition (primary method)
         if self.use_ocr:
             recognized_char = self._recognize_with_ocr(processed_image)
             if recognized_char and self._is_valid_character(recognized_char):
+                print(f"OCR recognized: {recognized_char}")
                 return recognized_char
         
         # Method 2: ML model recognition
         if self.use_ml and self.ml_ready:
             recognized_char = self._recognize_with_ml(processed_image)
             if recognized_char and self._is_valid_character(recognized_char):
+                print(f"ML recognized: {recognized_char}")
                 return recognized_char
         
-        # Method 3: Template matching (fallback)
-        recognized_char = self._recognize_with_templates(processed_image)
+        # Method 3: Template matching (very conservative fallback)
+        # Only use template matching if OCR completely fails
+        print("OCR failed, trying conservative template matching...")
+        recognized_char = self._recognize_with_templates_conservative(processed_image)
         if recognized_char and self._is_valid_character(recognized_char):
+            print(f"Template recognized: {recognized_char}")
             return recognized_char
         
+        print("No character recognized")
         return None
     
     def _preprocess_image(self, image: np.ndarray) -> np.ndarray:
@@ -99,19 +117,26 @@ class CharacterRecognizer:
         if len(image.shape) == 3:
             image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         
-        # Apply Gaussian blur to reduce noise
+        # Save debug image
+        # debug image saving disabled
+        
+        # Apply gentle Gaussian blur to reduce noise without losing details
         blurred = cv2.GaussianBlur(image, (3, 3), 0)
         
-        # Apply binary threshold
-        _, binary = cv2.threshold(blurred, 127, 255, cv2.THRESH_BINARY)
+        # Use adaptive thresholding for better results with varying lighting
+        binary = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                      cv2.THRESH_BINARY, 11, 2)
         
-        # Apply morphological operations to clean up the image
+        # Apply gentle morphological operations to clean up the image
         kernel = np.ones((2, 2), np.uint8)
         cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
         cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel)
         
-        # Resize to standard size for consistency
-        resized = cv2.resize(cleaned, (64, 64), interpolation=cv2.INTER_AREA)
+        # Resize to larger size for better recognition (256x256 instead of 64x64)
+        resized = cv2.resize(cleaned, (256, 256), interpolation=cv2.INTER_CUBIC)
+        
+        # Save debug image
+        # debug image saving disabled
         
         return resized
     
@@ -126,21 +151,37 @@ class CharacterRecognizer:
             Recognized character or None
         """
         try:
-            # Resize image for better OCR results
-            ocr_image = cv2.resize(image, (128, 128), interpolation=cv2.INTER_CUBIC)
+            # Use larger image size for better OCR results
+            ocr_image = cv2.resize(image, (256, 256), interpolation=cv2.INTER_CUBIC)
             
             # Apply additional preprocessing for OCR
             ocr_image = cv2.bitwise_not(ocr_image)  # Invert for OCR
             
-            # Run OCR
-            results = self.ocr_reader.readtext(ocr_image, detail=0, paragraph=False)
+            # Add padding around the character for better recognition
+            padded_image = cv2.copyMakeBorder(ocr_image, 20, 20, 20, 20, 
+                                            cv2.BORDER_CONSTANT, value=0)
+            
+            # Save debug image
+            # debug image saving disabled
+            
+            # Run OCR with better parameters
+            results = self.ocr_reader.readtext(padded_image, 
+                                            detail=1, 
+                                            paragraph=False,
+                                            width_ths=0.7,
+                                            height_ths=0.7,
+                                            allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,!?-+')
             
             if results and len(results) > 0:
-                # Get the first result and clean it
-                recognized_text = str(results[0]).strip()
+                # Get the result with highest confidence
+                best_result = max(results, key=lambda x: x[2])  # x[2] is confidence
+                recognized_text = str(best_result[1]).strip()
+                confidence = best_result[2]
+                
+                print(f"OCR result: '{recognized_text}' (confidence: {confidence:.2f})")
                 
                 # Return first character if multiple characters detected
-                if len(recognized_text) > 0:
+                if len(recognized_text) > 0 and confidence > 0.3:  # Lower confidence threshold
                     return recognized_text[0].upper()
             
         except Exception as e:
@@ -195,20 +236,132 @@ class CharacterRecognizer:
         best_match = None
         best_score = 0
         
+        # Save debug image
+        # debug image saving disabled
+        
+        # Check if image has enough content to be a valid character
+        if image.mean() < 10:  # Too dark/empty
+            print("Template matching: Image too dark, skipping")
+            return None
+        
+        # Get image properties for validation
+        image_area = image.shape[0] * image.shape[1]
+        white_pixels = np.sum(image > 127)
+        white_ratio = white_pixels / image_area
+        
+        print(f"Template matching - Image stats: mean={image.mean():.1f}, white_ratio={white_ratio:.3f}")
+        
+        # Analyze image shape characteristics
+        contours, _ = cv2.findContours(image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        shape_info = "unknown"
+        if contours:
+            largest_contour = max(contours, key=cv2.contourArea)
+            area = cv2.contourArea(largest_contour)
+            perimeter = cv2.arcLength(largest_contour, True)
+            if perimeter > 0:
+                circularity = 4 * np.pi * area / (perimeter * perimeter)
+                if circularity > 0.8:
+                    shape_info = "circular"
+                elif circularity > 0.5:
+                    shape_info = "oval"
+                else:
+                    shape_info = "angular"
+        
+        print(f"Shape analysis: {shape_info}")
+        
         for char, template in self.templates.items():
             # Resize template to match image size
             template_resized = cv2.resize(template, image.shape[::-1])
             
-            # Calculate correlation
+            # Try multiple matching methods
+            methods = [cv2.TM_CCOEFF_NORMED, cv2.TM_CCORR_NORMED]
+            max_scores = []
+            
+            for method in methods:
+                correlation = cv2.matchTemplate(image, template_resized, method)
+                _, max_val, _, _ = cv2.minMaxLoc(correlation)
+                max_scores.append(max_val)
+            
+            # Use the best score from all methods
+            score = max(max_scores)
+            
+            # Additional validation for specific characters
+            if char == '0':  # Circle - be very strict
+                if score > best_score and score > 0.6:  # Much higher threshold for circle
+                    # Additional check: image should be roughly circular
+                    contours, _ = cv2.findContours(image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    if contours:
+                        largest_contour = max(contours, key=cv2.contourArea)
+                        area = cv2.contourArea(largest_contour)
+                        perimeter = cv2.arcLength(largest_contour, True)
+                        if perimeter > 0:
+                            circularity = 4 * np.pi * area / (perimeter * perimeter)
+                            if circularity > 0.7:  # Must be fairly circular
+                                best_score = score
+                                best_match = char
+            elif char in ['1', 'I']:  # Lines - check if image is mostly vertical
+                if score > best_score and score > 0.4:
+                    # Check if image has strong vertical structure
+                    vertical_projection = np.sum(image, axis=1)
+                    horizontal_projection = np.sum(image, axis=0)
+                    if len(vertical_projection) > 0 and len(horizontal_projection) > 0:
+                        max_vertical = np.max(vertical_projection)
+                        max_horizontal = np.max(horizontal_projection)
+                        # Vertical should be much stronger than horizontal
+                        if max_vertical > max_horizontal * 1.5 and max_vertical > image.shape[1] * 0.4:
+                            best_score = score
+                            best_match = char
+            else:  # Other characters
+                if score > best_score and score > 0.35:  # Higher threshold
+                    best_score = score
+                    best_match = char
+        
+        print(f"Template matching - Best match: {best_match}, Score: {best_score:.3f}")
+        
+        # Return match if score is above threshold and image has reasonable content
+        if best_score > 0.35 and white_ratio > 0.02:  # At least 2% white pixels, higher threshold
+            return best_match
+        
+        return None
+    
+    def _recognize_with_templates_conservative(self, image: np.ndarray) -> Optional[str]:
+        """
+        Very conservative template matching that only matches very clear cases.
+        
+        Args:
+            image: Preprocessed image
+            
+        Returns:
+            Recognized character or None
+        """
+        # Only try a few very distinctive templates
+        simple_templates = {
+            '0': self._create_circle_template((64, 64)),
+            '1': self._create_line_template((64, 64), vertical=True),
+            'I': self._create_line_template((64, 64), vertical=True),
+            'O': self._create_circle_template((64, 64)),
+        }
+        
+        best_match = None
+        best_score = 0
+        
+        for char, template in simple_templates.items():
+            # Resize template to match image size
+            template_resized = cv2.resize(template, image.shape[::-1])
+            
+            # Use only the most reliable matching method
             correlation = cv2.matchTemplate(image, template_resized, cv2.TM_CCOEFF_NORMED)
             _, max_val, _, _ = cv2.minMaxLoc(correlation)
             
-            if max_val > best_score:
+            # Very high threshold for conservative matching
+            if max_val > 0.7 and max_val > best_score:
                 best_score = max_val
                 best_match = char
         
-        # Return match if score is above threshold
-        if best_score > 0.3:
+        print(f"Conservative template matching - Best match: {best_match}, Score: {best_score:.3f}")
+        
+        # Only return if very confident
+        if best_score > 0.7:
             return best_match
         
         return None
@@ -271,16 +424,40 @@ class CharacterRecognizer:
             '3': self._create_three_template(template_size),
             '4': self._create_four_template(template_size),
             '5': self._create_five_template(template_size),
+            '6': self._create_six_template(template_size),
+            '7': self._create_seven_template(template_size),
+            '8': self._create_eight_template(template_size),
+            '9': self._create_nine_template(template_size),
         }
         
         # Letter templates (very basic)
         letters = {
+            'A': self._create_a_template(template_size),
+            'B': self._create_b_template(template_size),
+            'C': self._create_c_template(template_size),
+            'D': self._create_d_template(template_size),
+            'E': self._create_e_template(template_size),
+            'F': self._create_f_template(template_size),
+            'G': self._create_g_template(template_size),
             'H': self._create_h_template(template_size),
             'I': self._create_line_template(template_size, vertical=True),
+            'J': self._create_j_template(template_size),
+            'K': self._create_k_template(template_size),
             'L': self._create_l_template(template_size),
+            'M': self._create_m_template(template_size),
+            'N': self._create_n_template(template_size),
             'O': self._create_circle_template(template_size),
+            'P': self._create_p_template(template_size),
+            'Q': self._create_q_template(template_size),
+            'R': self._create_r_template(template_size),
+            'S': self._create_s_template(template_size),
             'T': self._create_t_template(template_size),
             'U': self._create_u_template(template_size),
+            'V': self._create_v_template(template_size),
+            'W': self._create_w_template(template_size),
+            'X': self._create_x_template(template_size),
+            'Y': self._create_y_template(template_size),
+            'Z': self._create_z_template(template_size),
         }
         
         self.templates.update(digits)
@@ -291,7 +468,8 @@ class CharacterRecognizer:
         template = np.zeros(size, dtype=np.uint8)
         center = (size[1] // 2, size[0] // 2)
         radius = min(size) // 3
-        cv2.circle(template, center, radius, 255, 2)
+        # Create a thicker circle for better matching
+        cv2.circle(template, center, radius, 255, 4)
         return template
     
     def _create_line_template(self, size: Tuple[int, int], vertical: bool = True) -> np.ndarray:
@@ -466,3 +644,289 @@ class CharacterRecognizer:
         
         self.ml_ready = True
         print(f"ML model trained with {len(training_data)} samples")
+    
+    # Additional template creation methods
+    def _create_a_template(self, size: Tuple[int, int]) -> np.ndarray:
+        """Create an A template."""
+        template = np.zeros(size, dtype=np.uint8)
+        # Left diagonal
+        cv2.line(template, (size[1] // 4, 3 * size[0] // 4), (size[1] // 2, size[0] // 4), 255, 2)
+        # Right diagonal
+        cv2.line(template, (size[1] // 2, size[0] // 4), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Horizontal crossbar
+        cv2.line(template, (size[1] // 3, size[0] // 2), (2 * size[1] // 3, size[0] // 2), 255, 2)
+        return template
+    
+    def _create_b_template(self, size: Tuple[int, int]) -> np.ndarray:
+        """Create a B template."""
+        template = np.zeros(size, dtype=np.uint8)
+        # Left vertical line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Top horizontal line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (3 * size[1] // 4, size[0] // 4), 255, 2)
+        # Middle horizontal line
+        cv2.line(template, (size[1] // 4, size[0] // 2), (3 * size[1] // 4, size[0] // 2), 255, 2)
+        # Bottom horizontal line
+        cv2.line(template, (size[1] // 4, 3 * size[0] // 4), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Right vertical lines
+        cv2.line(template, (3 * size[1] // 4, size[0] // 4), (3 * size[1] // 4, size[0] // 2), 255, 2)
+        cv2.line(template, (3 * size[1] // 4, size[0] // 2), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        return template
+    
+    def _create_c_template(self, size: Tuple[int, int]) -> np.ndarray:
+        """Create a C template."""
+        template = np.zeros(size, dtype=np.uint8)
+        # Left vertical line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Top horizontal line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (3 * size[1] // 4, size[0] // 4), 255, 2)
+        # Bottom horizontal line
+        cv2.line(template, (size[1] // 4, 3 * size[0] // 4), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        return template
+    
+    def _create_d_template(self, size: Tuple[int, int]) -> np.ndarray:
+        """Create a D template."""
+        template = np.zeros(size, dtype=np.uint8)
+        # Left vertical line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Top horizontal line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (3 * size[1] // 4, size[0] // 4), 255, 2)
+        # Bottom horizontal line
+        cv2.line(template, (size[1] // 4, 3 * size[0] // 4), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Right vertical line
+        cv2.line(template, (3 * size[1] // 4, size[0] // 4), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        return template
+    
+    def _create_e_template(self, size: Tuple[int, int]) -> np.ndarray:
+        """Create an E template."""
+        template = np.zeros(size, dtype=np.uint8)
+        # Left vertical line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Top horizontal line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (3 * size[1] // 4, size[0] // 4), 255, 2)
+        # Middle horizontal line
+        cv2.line(template, (size[1] // 4, size[0] // 2), (3 * size[1] // 4, size[0] // 2), 255, 2)
+        # Bottom horizontal line
+        cv2.line(template, (size[1] // 4, 3 * size[0] // 4), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        return template
+    
+    def _create_f_template(self, size: Tuple[int, int]) -> np.ndarray:
+        """Create an F template."""
+        template = np.zeros(size, dtype=np.uint8)
+        # Left vertical line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Top horizontal line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (3 * size[1] // 4, size[0] // 4), 255, 2)
+        # Middle horizontal line
+        cv2.line(template, (size[1] // 4, size[0] // 2), (3 * size[1] // 4, size[0] // 2), 255, 2)
+        return template
+    
+    def _create_g_template(self, size: Tuple[int, int]) -> np.ndarray:
+        """Create a G template."""
+        template = np.zeros(size, dtype=np.uint8)
+        # Left vertical line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Top horizontal line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (3 * size[1] // 4, size[0] // 4), 255, 2)
+        # Bottom horizontal line
+        cv2.line(template, (size[1] // 4, 3 * size[0] // 4), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Right vertical line (partial)
+        cv2.line(template, (3 * size[1] // 4, size[0] // 2), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Right horizontal line
+        cv2.line(template, (size[1] // 2, 3 * size[0] // 4), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        return template
+    
+    def _create_j_template(self, size: Tuple[int, int]) -> np.ndarray:
+        """Create a J template."""
+        template = np.zeros(size, dtype=np.uint8)
+        # Top horizontal line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (3 * size[1] // 4, size[0] // 4), 255, 2)
+        # Right vertical line
+        cv2.line(template, (3 * size[1] // 4, size[0] // 4), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Bottom horizontal line
+        cv2.line(template, (size[1] // 4, 3 * size[0] // 4), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Left vertical line (partial)
+        cv2.line(template, (size[1] // 4, 2 * size[0] // 3), (size[1] // 4, 3 * size[0] // 4), 255, 2)
+        return template
+    
+    def _create_k_template(self, size: Tuple[int, int]) -> np.ndarray:
+        """Create a K template."""
+        template = np.zeros(size, dtype=np.uint8)
+        # Left vertical line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Top diagonal
+        cv2.line(template, (size[1] // 4, size[0] // 2), (3 * size[1] // 4, size[0] // 4), 255, 2)
+        # Bottom diagonal
+        cv2.line(template, (size[1] // 4, size[0] // 2), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        return template
+    
+    def _create_m_template(self, size: Tuple[int, int]) -> np.ndarray:
+        """Create an M template."""
+        template = np.zeros(size, dtype=np.uint8)
+        # Left vertical line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Right vertical line
+        cv2.line(template, (3 * size[1] // 4, size[0] // 4), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Left diagonal
+        cv2.line(template, (size[1] // 4, size[0] // 4), (size[1] // 2, size[0] // 2), 255, 2)
+        # Right diagonal
+        cv2.line(template, (size[1] // 2, size[0] // 2), (3 * size[1] // 4, size[0] // 4), 255, 2)
+        return template
+    
+    def _create_n_template(self, size: Tuple[int, int]) -> np.ndarray:
+        """Create an N template."""
+        template = np.zeros(size, dtype=np.uint8)
+        # Left vertical line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Right vertical line
+        cv2.line(template, (3 * size[1] // 4, size[0] // 4), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Diagonal
+        cv2.line(template, (size[1] // 4, size[0] // 4), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        return template
+    
+    def _create_p_template(self, size: Tuple[int, int]) -> np.ndarray:
+        """Create a P template."""
+        template = np.zeros(size, dtype=np.uint8)
+        # Left vertical line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Top horizontal line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (3 * size[1] // 4, size[0] // 4), 255, 2)
+        # Middle horizontal line
+        cv2.line(template, (size[1] // 4, size[0] // 2), (3 * size[1] // 4, size[0] // 2), 255, 2)
+        # Right vertical line (partial)
+        cv2.line(template, (3 * size[1] // 4, size[0] // 4), (3 * size[1] // 4, size[0] // 2), 255, 2)
+        return template
+    
+    def _create_q_template(self, size: Tuple[int, int]) -> np.ndarray:
+        """Create a Q template."""
+        template = np.zeros(size, dtype=np.uint8)
+        # Circle
+        center = (size[1] // 2, size[0] // 2)
+        radius = min(size) // 3
+        cv2.circle(template, center, radius, 255, 2)
+        # Tail
+        cv2.line(template, (size[1] // 2, 2 * size[0] // 3), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        return template
+    
+    def _create_r_template(self, size: Tuple[int, int]) -> np.ndarray:
+        """Create an R template."""
+        template = np.zeros(size, dtype=np.uint8)
+        # Left vertical line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Top horizontal line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (3 * size[1] // 4, size[0] // 4), 255, 2)
+        # Middle horizontal line
+        cv2.line(template, (size[1] // 4, size[0] // 2), (3 * size[1] // 4, size[0] // 2), 255, 2)
+        # Right vertical line (partial)
+        cv2.line(template, (3 * size[1] // 4, size[0] // 4), (3 * size[1] // 4, size[0] // 2), 255, 2)
+        # Diagonal
+        cv2.line(template, (size[1] // 4, size[0] // 2), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        return template
+    
+    def _create_v_template(self, size: Tuple[int, int]) -> np.ndarray:
+        """Create a V template."""
+        template = np.zeros(size, dtype=np.uint8)
+        # Left diagonal
+        cv2.line(template, (size[1] // 4, size[0] // 4), (size[1] // 2, 3 * size[0] // 4), 255, 2)
+        # Right diagonal
+        cv2.line(template, (size[1] // 2, 3 * size[0] // 4), (3 * size[1] // 4, size[0] // 4), 255, 2)
+        return template
+    
+    def _create_w_template(self, size: Tuple[int, int]) -> np.ndarray:
+        """Create a W template."""
+        template = np.zeros(size, dtype=np.uint8)
+        # Left vertical line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Right vertical line
+        cv2.line(template, (3 * size[1] // 4, size[0] // 4), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Left diagonal
+        cv2.line(template, (size[1] // 4, size[0] // 4), (size[1] // 2, 3 * size[0] // 4), 255, 2)
+        # Right diagonal
+        cv2.line(template, (size[1] // 2, 3 * size[0] // 4), (3 * size[1] // 4, size[0] // 4), 255, 2)
+        return template
+    
+    def _create_x_template(self, size: Tuple[int, int]) -> np.ndarray:
+        """Create an X template."""
+        template = np.zeros(size, dtype=np.uint8)
+        # Diagonal 1
+        cv2.line(template, (size[1] // 4, size[0] // 4), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Diagonal 2
+        cv2.line(template, (3 * size[1] // 4, size[0] // 4), (size[1] // 4, 3 * size[0] // 4), 255, 2)
+        return template
+    
+    def _create_y_template(self, size: Tuple[int, int]) -> np.ndarray:
+        """Create a Y template."""
+        template = np.zeros(size, dtype=np.uint8)
+        # Left diagonal
+        cv2.line(template, (size[1] // 4, size[0] // 4), (size[1] // 2, size[0] // 2), 255, 2)
+        # Right diagonal
+        cv2.line(template, (size[1] // 2, size[0] // 2), (3 * size[1] // 4, size[0] // 4), 255, 2)
+        # Vertical line
+        cv2.line(template, (size[1] // 2, size[0] // 2), (size[1] // 2, 3 * size[0] // 4), 255, 2)
+        return template
+    
+    def _create_z_template(self, size: Tuple[int, int]) -> np.ndarray:
+        """Create a Z template."""
+        template = np.zeros(size, dtype=np.uint8)
+        # Top horizontal line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (3 * size[1] // 4, size[0] // 4), 255, 2)
+        # Diagonal
+        cv2.line(template, (3 * size[1] // 4, size[0] // 4), (size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Bottom horizontal line
+        cv2.line(template, (size[1] // 4, 3 * size[0] // 4), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        return template
+    
+    # Additional digit templates
+    def _create_six_template(self, size: Tuple[int, int]) -> np.ndarray:
+        """Create a 6 template."""
+        template = np.zeros(size, dtype=np.uint8)
+        # Left vertical line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Top horizontal line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (3 * size[1] // 4, size[0] // 4), 255, 2)
+        # Middle horizontal line
+        cv2.line(template, (size[1] // 4, size[0] // 2), (3 * size[1] // 4, size[0] // 2), 255, 2)
+        # Bottom horizontal line
+        cv2.line(template, (size[1] // 4, 3 * size[0] // 4), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Right vertical line (partial)
+        cv2.line(template, (3 * size[1] // 4, size[0] // 2), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        return template
+    
+    def _create_seven_template(self, size: Tuple[int, int]) -> np.ndarray:
+        """Create a 7 template."""
+        template = np.zeros(size, dtype=np.uint8)
+        # Top horizontal line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (3 * size[1] // 4, size[0] // 4), 255, 2)
+        # Diagonal
+        cv2.line(template, (3 * size[1] // 4, size[0] // 4), (size[1] // 4, 3 * size[0] // 4), 255, 2)
+        return template
+    
+    def _create_eight_template(self, size: Tuple[int, int]) -> np.ndarray:
+        """Create an 8 template."""
+        template = np.zeros(size, dtype=np.uint8)
+        # Left vertical line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Right vertical line
+        cv2.line(template, (3 * size[1] // 4, size[0] // 4), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Top horizontal line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (3 * size[1] // 4, size[0] // 4), 255, 2)
+        # Middle horizontal line
+        cv2.line(template, (size[1] // 4, size[0] // 2), (3 * size[1] // 4, size[0] // 2), 255, 2)
+        # Bottom horizontal line
+        cv2.line(template, (size[1] // 4, 3 * size[0] // 4), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        return template
+    
+    def _create_nine_template(self, size: Tuple[int, int]) -> np.ndarray:
+        """Create a 9 template."""
+        template = np.zeros(size, dtype=np.uint8)
+        # Left vertical line (partial)
+        cv2.line(template, (size[1] // 4, size[0] // 4), (size[1] // 4, size[0] // 2), 255, 2)
+        # Right vertical line
+        cv2.line(template, (3 * size[1] // 4, size[0] // 4), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        # Top horizontal line
+        cv2.line(template, (size[1] // 4, size[0] // 4), (3 * size[1] // 4, size[0] // 4), 255, 2)
+        # Middle horizontal line
+        cv2.line(template, (size[1] // 4, size[0] // 2), (3 * size[1] // 4, size[0] // 2), 255, 2)
+        # Bottom horizontal line
+        cv2.line(template, (size[1] // 4, 3 * size[0] // 4), (3 * size[1] // 4, 3 * size[0] // 4), 255, 2)
+        return template

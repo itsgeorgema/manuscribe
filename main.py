@@ -15,6 +15,7 @@ from character_recognizer import CharacterRecognizer
 class GestureToTextApp:
     def __init__(self):
         """Initialize the Manuscribe application."""
+        # Use system default camera
         self.cap = cv2.VideoCapture(0)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
@@ -91,6 +92,9 @@ class GestureToTextApp:
         drawing_image = self.drawing_manager.get_drawing_as_image()
         
         if drawing_image is not None:
+            print(f"Processing drawing image with shape: {drawing_image.shape}")
+            print(f"Drawing brightness: {drawing_image.mean():.2f}")
+            
             # Recognize character from drawing
             recognized_char = self.character_recognizer.recognize(drawing_image)
             
@@ -98,6 +102,10 @@ class GestureToTextApp:
                 self.recognized_text += recognized_char
                 print(f"Recognized: {recognized_char}")
                 print(f"Current text: {self.recognized_text}")
+            else:
+                print("No character recognized")
+        else:
+            print("No drawing to process")
         
         # Clear the drawing
         self.drawing_manager.clear_drawing()
@@ -158,6 +166,7 @@ class GestureToTextApp:
                 self.recognized_text = ""
                 self.drawing_manager.clear_drawing()
                 print("Cleared recognized text")
+            # Camera cycling disabled; always use system default
         
         # Cleanup
         self.cap.release()

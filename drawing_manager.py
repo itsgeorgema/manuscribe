@@ -166,8 +166,8 @@ class DrawingManager:
                 cv2.circle(frame, stroke.points[-1], 2, (0, 0, 255), -1)  # Red end
     
     def get_drawing_as_image(self, 
-                            padding: int = 20, 
-                            target_size: Tuple[int, int] = (128, 128)) -> Optional[np.ndarray]:
+                            padding: int = 30, 
+                            target_size: Tuple[int, int] = (256, 256)) -> Optional[np.ndarray]:
         """
         Get the current drawing as a processed image for character recognition.
         
@@ -184,11 +184,11 @@ class DrawingManager:
         # Create a clean canvas
         canvas = np.zeros(self.canvas_size[::-1], dtype=np.uint8)  # (height, width)
         
-        # Draw all strokes on the canvas
+        # Draw all strokes on the canvas with thicker lines for better visibility
         for stroke in self.strokes:
             if len(stroke.points) >= 2:
                 for i in range(1, len(stroke.points)):
-                    cv2.line(canvas, stroke.points[i-1], stroke.points[i], 255, 3)
+                    cv2.line(canvas, stroke.points[i-1], stroke.points[i], 255, 5)
         
         # Find bounding box of all strokes
         bbox = self._get_all_strokes_bounding_box()
@@ -209,11 +209,11 @@ class DrawingManager:
         if cropped.size == 0:
             return None
         
-        # Resize to target size
-        resized = cv2.resize(cropped, target_size, interpolation=cv2.INTER_AREA)
+        # Resize to target size with better interpolation
+        resized = cv2.resize(cropped, target_size, interpolation=cv2.INTER_CUBIC)
         
-        # Apply morphological operations to clean up the image
-        kernel = np.ones((3, 3), np.uint8)
+        # Apply gentle morphological operations to clean up the image
+        kernel = np.ones((2, 2), np.uint8)
         resized = cv2.morphologyEx(resized, cv2.MORPH_CLOSE, kernel)
         resized = cv2.morphologyEx(resized, cv2.MORPH_OPEN, kernel)
         
